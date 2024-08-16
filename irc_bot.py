@@ -1,13 +1,15 @@
 import socket
+import ssl
 import re
 import sqlite3
-import pymysql  # For MySQL
-import psycopg2  # For PostgreSQL
+import pymysql
+import psycopg2
 import config
 import db_config
 from flood_protection import FloodProtection
 from filtered_nicks import BAD_NICKNAMES
 from filtered_words import FILTERED_WORDS
+import commands  # Import the command handling functions
 
 # Function to strip IRC control codes (color codes, bold, underline, etc.)
 def strip_control_codes(message):
@@ -23,7 +25,7 @@ class IRCBot:
         self.ident = config.IDENT
         self.password = config.PASSWORD
         self.help_channel = config.HELP_CHANNEL  # Help channel defined in the config
-        self.irc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.use_ssl = config.USE_SSL  # Check if SSL should be used
         self.flood_protection_status = {}  # Track flood protection status per channel
         self.flood_protection = FloodProtection()
 
@@ -31,6 +33,7 @@ class IRCBot:
         self.user_offenses = {}
         self.operators = set()
         self.verification_queue = {}  # Queue for storing actions during NickServ verification
+        self.privileges_confirmed = False  # Ensure privileges are confirmed before tracking
 
         # Connect to the appropriate database
         if db_config.DB_TYPE == 'sqlite':
@@ -107,7 +110,16 @@ class IRCBot:
         self.conn.commit()
 
     def connect(self):
+        raw_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        if self.use_ssl:
+            context = ssl.create_default_context()
+            self.irc = context.wrap_socket(raw_socket, server_hostname=self.server)
+        else:
+            self.irc = raw_socket
+
         self.irc.connect((self.server, self.port))
+        
         if self.password:
             self.send_command(f"PASS {self.password}")
         self.send_command(f"NICK {self.nickname}")
@@ -119,6 +131,10 @@ class IRCBot:
     
     def send_message(self, target, message):
         self.send_command(f"PRIVMSG {target} :{message}")
+    
+    def check_privileges(self):
+        # Send a WHOIS or IDENT command to verify the bot's privileges
+        self.send_command(f"WHOIS {self.nickname}")
     
     def listen(self):
         while True:
@@ -135,215 +151,92 @@ class IRCBot:
                 # Strip control codes from the message
                 sanitized_message = strip_control_codes(message)
 
-                # Check if the user is in the verification queue
-                if user in self.verification_queue:
-                    self.verification_queue[user].append((channel, sanitized_message))
-                else:
-                    self.track_user_stats(user, sanitized_message, action="message")
+                # If privileges are confirmed, start tracking user stats
+                if self.privileges_confirmed:
+                    if user in self.verification_queue:
+                        self.verification_queue[user].append((channel, sanitized_message))
+                    else:
+                        self.track_user_stats(user, sanitized_message, action="message")
 
-                # Handle flood protection commands
-                if sanitized_message.startswith(":floodpro"):
-                    self.handle_floodpro_command(channel, user, sanitized_message)
-
-                if self.flood_protection_status.get(channel, True):  # Default to enabled
-                    if self.flood_protection.check_flood(user, channel):
-                        self.handle_flood(user, channel)
-
-                # Check if the user is an operator in the channel
-                if f"@{channel}" in response:
-                    self.operators.add(user)
-                elif f"+{channel}" in response:
-                    self.operators.discard(user)
-
-                # Commands for ops (moderators)
-                if user in self.operators:
-                    if sanitized_message.startswith(":op"):
-                        self.op_user(channel, sanitized_message.split()[1])
-                    elif sanitized_message.startswith(":deop"):
-                        self.deop_user(channel, sanitized_message.split()[1])
-                    elif sanitized_message.startswith(":voice"):
-                        self.voice_user(channel, sanitized_message.split()[1])
-                    elif sanitized_message.startswith(":devoice"):
-                        self.devoice_user(channel, sanitized_message.split()[1])
-                    elif sanitized_message.startswith(":kick"):
-                        self.kick_user(channel, sanitized_message.split()[1], "[auto] You've been kicked for flooding.")
-                        self.track_user_stats(sanitized_message.split()[1], action="kick")
-                    elif sanitized_message.startswith(":ban"):
-                        self.ban_user(channel, sanitized_message.split()[1])
-                        self.track_user_stats(sanitized_message.split()[1], action="ban")
-                    elif sanitized_message.startswith(":shun"):
-                        self.shun_user(channel, sanitized_message.split()[1])
-                    elif sanitized_message.startswith(":join"):
-                        self.join_channel(sanitized_message.split()[1])
-                        self.track_user_stats(sanitized_message.split()[1], action="join")
-                    elif sanitized_message.startswith(":part"):
-                        self.part_channel(sanitized_message.split()[1])
-                        self.track_user_stats(sanitized_message.split()[1], action="part")
-                    elif sanitized_message.startswith(":userstat"):
-                        self.handle_userstat_command(channel, sanitized_message)
+                # Handle commands
+                command = sanitized_message.split()
+                if sanitized_message.startswith(":op"):
+                    commands.handle_op(self, channel, user, command[1])
+                elif sanitized_message.startswith(":deop"):
+                    commands.handle_deop(self, channel, user, command[1])
+                elif sanitized_message.startswith(":voice"):
+                    commands.handle_voice(self, channel, user, command[1])
+                elif sanitized_message.startswith(":devoice"):
+                    commands.handle_devoice(self, channel, user, command[1])
+                elif sanitized_message.startswith(":kick"):
+                    commands.handle_kick(self, channel, user, command[1])
+                elif sanitized_message.startswith(":ban"):
+                    commands.handle_ban(self, channel, user, command[1])
+                elif sanitized_message.startswith(":shun"):
+                    commands.handle_shun(self, channel, user, command[1])
+                elif sanitized_message.startswith(":join"):
+                    commands.handle_join(self, channel, user, command[1])
+                elif sanitized_message.startswith(":part"):
+                    commands.handle_part(self, channel, user, command[1])
+                elif sanitized_message.startswith(":floodpro"):
+                    commands.handle_floodpro(self, channel, user, command)
+                elif sanitized_message.startswith(":userstat"):
+                    commands.handle_userstat(self, channel, user, command)
 
             # Check for bad nicknames on user join
             if "JOIN" in response:
                 user_nick = response.split('!')[0][1:]
                 channel = response.split('JOIN :')[1].strip()  # Get the channel
-                self.send_command(f"WHOIS {user_nick}")
+                if self.privileges_confirmed:
+                    self.send_command(f"WHOIS {user_nick}")
 
             # Handle user quitting the channel
             if "QUIT" in response:
                 user_nick = response.split('!')[0][1:]
-                self.track_user_stats(user_nick, action="quit")
+                if self.privileges_confirmed:
+                    self.track_user_stats(user_nick, action="quit")
 
             # Handle WHOIS and NickServ identification check
             if "NOTICE" in response and "NickServ" in response:
                 nickserv_response = response.split(":")[2].strip()
                 user_nick = response.split('!')[0][1:]
                 if "is not registered" in nickserv_response:
-                    self.send_message(user_nick, "Your nickname is not registered with NickServ. Please identify before participating.")
+                    self.send_message(self.help_channel, f"[auto] Notice: Unregistered users must register to track stats for prizes and rewards.")
                 elif "has identified" in nickserv_response:
                     # User is verified, process queued actions
                     if user_nick in self.verification_queue:
                         for channel, action in self.verification_queue[user_nick]:
                             self.track_user_stats(user_nick, action=action)
                         del self.verification_queue[user_nick]  # Clear the queue
+                elif "End of WHOIS" in response:
+                    # Once WHOIS confirms bot's identity, start tracking and syncing
+                    if user_nick == self.nickname:
+                        self.privileges_confirmed = True
+                        self.sync_database()
 
-            if "WHOIS" in response:
-                whois_data = response.split()
-                user_nick = whois_data[3]
-                user_ip = whois_data[-1]
+    def sync_database(self):
+        # Perform a sync with the database to ensure consistency
+        self.cursor.execute('SELECT nickname FROM users')
+        stored_nicknames = {row[0] for row in self.cursor.fetchall()}
 
-                # Check if the IP is different from the one stored in the database
-                self.cursor.execute('SELECT ip_address FROM users WHERE nickname = ?', (user_nick,))
-                stored_ip = self.cursor.fetchone()
+        # Fetch the list of users currently in the channel (this is just an example)
+        # This would require an additional IRC command to fetch the list of users
+        # For now, let's assume we have a function that fetches this
+        current_users = self.get_current_channel_users()
 
-                if stored_ip and stored_ip[0] != user_ip:
-                    # Ask NickServ for identification
-                    self.verification_queue[user_nick] = []
-                    self.send_command(f"PRIVMSG NickServ :STATUS {user_nick}")
-                else:
-                    # If IP matches or no IP is stored, track the user
-                    self.track_user_stats(user_nick)
+        # Add any missing users to the database
+        for user in current_users:
+            if user not in stored_nicknames:
+                self.cursor.execute('INSERT INTO users (nickname) VALUES (?)', (user,))
+                self.conn.commit()
 
-    def handle_floodpro_command(self, channel, user, message):
-        # Handle :floodpro on/off command
-        if user in self.operators:
-            command = message.strip().split()
-            if len(command) == 2:
-                if command[1] == "on":
-                    self.flood_protection_status[channel] = True
-                    self.send_message(channel, f"[auto] Flood protection enabled in {channel}.")
-                elif command[1] == "off":
-                    self.flood_protection_status[channel] = False
-                    self.send_message(channel, f"[auto] Flood protection disabled in {channel}.")
-                else:
-                    self.send_message(channel, "[auto] Invalid flood protection command. Use :floodpro on/off.")
-            else:
-                self.send_message(channel, "[auto] Invalid flood protection command. Use :floodpro on/off.")
-        else:
-            self.send_message(channel, "[auto] Only operators can use the :floodpro command.")
+        print("Database sync complete.")
 
-    def track_user_stats(self, nickname, message=None, action="message"):
-        # Check if the user exists in the database
-        self.cursor.execute('SELECT id, messages_sent, reputation FROM users WHERE nickname = ?', (nickname,))
-        user = self.cursor.fetchone()
-
-        if user:
-            # Update stats based on the action
-            if action == "message":
-                self.cursor.execute('UPDATE users SET messages_sent = messages_sent + 1, reputation = reputation + 1 WHERE nickname = ?', (nickname,))
-            elif action == "join":
-                self.cursor.execute('UPDATE users SET joins = joins + 1, reputation = reputation + 1 WHERE nickname = ?', (nickname,))
-            elif action == "part":
-                self.cursor.execute('UPDATE users SET parts = parts + 1, reputation = reputation + 2 WHERE nickname = ?', (nickname,))
-            elif action == "quit":
-                self.cursor.execute('UPDATE users SET quits = quits + 1, reputation = reputation + 0.2 WHERE nickname = ?', (nickname,))
-            elif action == "kick":
-                self.cursor.execute('UPDATE users SET reputation = reputation - 1 WHERE nickname = ?', (nickname,))
-            elif action == "ban":
-                self.cursor.execute('UPDATE users SET reputation = reputation - 2 WHERE nickname = ?', (nickname,))
-            elif action == "kill":
-                self.cursor.execute('UPDATE users SET reputation = reputation - 5 WHERE nickname = ?', (nickname,))
-            elif action == "gline":
-                self.cursor.execute('UPDATE users SET reputation = reputation - 10 WHERE nickname = ?', (nickname,))
-        else:
-            # Insert new user
-            if action in ["message", "join"]:
-                reputation = 1
-            elif action == "part":
-                reputation = 2
-            elif action == "quit":
-                reputation = 0.2
-            else:
-                reputation = 0
-
-            self.cursor.execute('INSERT INTO users (nickname, messages_sent, joins, parts, quits, reputation) VALUES (?, 1, 0, 0, 0, ?)', (nickname, reputation))
-
-        self.conn.commit()
-
-        # Check if user is disruptive (negative reputation)
-        self.check_disruptive_user(nickname)
-
-    def check_disruptive_user(self, nickname):
-        # Get the user's reputation
-        self.cursor.execute('SELECT reputation FROM users WHERE nickname = ?', (nickname,))
-        reputation = self.cursor.fetchone()[0]
-
-        if reputation < 0:
-            # User is disruptive
-            self.send_message(self.help_channel, f"[auto] {nickname} has been flagged as a disruptive chatter due to negative reputation.")
-            # Additional actions for disruptive users can be implemented here
-
-    def handle_flood(self, user, channel):
-        # Handle flood violations
-        self.cursor.execute('SELECT id FROM users WHERE nickname = ?', (user,))
-        user_id = self.cursor.fetchone()[0]
-
-        if user not in self.user_offenses:
-            self.user_offenses[user] = 1
-            self.send_message(channel, f"[auto] {user}: Warning! You are sending messages too quickly.")
-            # Insert violation
-            self.cursor.execute('INSERT INTO violations (user_id, violation_type) VALUES (?, ?)', (user_id, 'flood'))
-            self.track_user_stats(user, action="kick")  # Deduct points for flood warnings
-        elif self.user_offenses[user] == 1:
-            self.kick_user(channel, user, "[auto] You've been kicked for flooding.")
-            self.user_offenses[user] += 1
-            # Insert violation
-            self.cursor.execute('INSERT INTO violations (user_id, violation_type) VALUES (?, ?)', (user_id, 'flood'))
-            self.track_user_stats(user, action="kick")
-        elif self.user_offenses[user] == 2:
-            self.ban_user(channel, user)
-            # Insert violation
-            self.cursor.execute('INSERT INTO violations (user_id, violation_type) VALUES (?, ?)', (user_id, 'flood'))
-            self.track_user_stats(user, action="ban")
-
-        self.conn.commit()
-
-    def op_user(self, channel, user):
-        self.send_command(f"MODE {channel} +o {user}")
-
-    def deop_user(self, channel, user):
-        self.send_command(f"MODE {channel} -o {user}")
-
-    def voice_user(self, channel, user):
-        self.send_command(f"MODE {channel} +v {user}")
-
-    def devoice_user(self, channel, user):
-        self.send_command(f"MODE {channel} -v {user}")
-
-    def kick_user(self, channel, target, reason):
-        self.send_command(f"KICK {channel} {target} :{reason}")
-
-    def ban_user(self, channel, target):
-        self.send_command(f"MODE {channel} +b {target}")
-        self.kick_user(channel, target, "[auto] You've been banned for repeated offenses.")
-
-    def shun_user(self, channel, target):
-        self.send_command(f"MODE {channel} +q {target}")
-
-    def join_channel(self, channel):
-        self.send_command(f"JOIN {channel}")
-
-    def part_channel(self, channel):
-        self.send_command(f"PART {channel}")
+    def get_current_channel_users(self):
+        # This function should return a list of users currently in the channel
+        # In reality, you'd need to issue an IRC command to get this list
+        # For simplicity, returning a static list here
+        return ["user1", "user2", "user3"]
 
     def close(self):
         self.conn.close()

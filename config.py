@@ -1,14 +1,10 @@
 # config.py
 
 IRC_SERVER = "irc.example.com"
-IRC_PORT = 6667
-DEFAULT_CHANNEL = "#yourchannel"  # Replace with the default channel you want the bot to join
+IRC_PORT = 6697  # Default port for SSL connections, adjust as needed
 NICKNAME = "YourBot"
 REALNAME = "Your Realname"
 IDENT = "yourbot"
-PASSWORD = "yourpassword"  # If required, otherwise leave as None
-
-# Flood protection configuration
-FLOOD_PROTECTION_ENABLED = {
-    "#yourchannel": True,  # Set to False if you want to disable flood protection for this channel
-}
+PASSWORD = "yourpassword"
+HELP_CHANNEL = "#help"
+USE_SSL = True  # Set this to True to enable SSL, or False for non-SSL
