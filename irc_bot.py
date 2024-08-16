@@ -1,5 +1,6 @@
 import socket
 import config
+from flood_protection import FloodProtection
 
 class IRCBot:
     def __init__(self):
@@ -11,7 +12,12 @@ class IRCBot:
         self.ident = config.IDENT
         self.password = config.PASSWORD
         self.irc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        
+        self.flood_protection_enabled = config.FLOOD_PROTECTION_ENABLED.get(self.channel, True)
+        self.flood_protection = FloodProtection()
+
+        # Tracking flood offenses
+        self.user_offenses = {}
+
     def connect(self):
         self.irc.connect((self.server, self.port))
         if self.password:
@@ -37,6 +43,10 @@ class IRCBot:
                 user = response.split('!')[0][1:]
                 message = response.split('PRIVMSG')[1].split(':')[1].strip()
 
+                if self.flood_protection_enabled:
+                    if self.flood_protection.check_flood(user, self.channel):
+                        self.handle_flood(user)
+
                 # Parse commands
                 if message.startswith(":op"):
                     self.op_user(user)
@@ -52,6 +62,17 @@ class IRCBot:
                     self.ban_user(user, message.split()[1])
                 elif message.startswith(":shun"):
                     self.shun_user(user, message.split()[1])
+
+    def handle_flood(self, user):
+        if user not in self.user_offenses:
+            self.user_offenses[user] = 1
+            self.send_message(f"{user}: Warning! You are sending messages too quickly.")
+        elif self.user_offenses[user] == 1:
+            self.kick_user(self.nickname, user)
+            self.user_offenses[user] += 1
+        elif self.user_offenses[user] == 2:
+            self.ban_user(self.nickname, user)
+            self.user_offenses[user] = 0  # Reset after ban
 
     def op_user(self, user):
         self.send_command(f"MODE {self.channel} +o {user}")
