@@ -1,4 +1,4 @@
-AutoMod IRC Bot with Flood Protection
+AutoMod IRC Bot with Multi Features for Channels, Users, and Servers. Reputation, protections, and much more.
 -
 This IRC bot is written in Python and includes flood protection features. It allows each channel to toggle flood protection on or off, warning users after 7 messages in under 5 seconds, kicking them on the second offense, and banning them on the third offense.
 
