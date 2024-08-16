@@ -67,6 +67,10 @@ On a second offense, they will be kicked from the channel.
 On a third offense, they will be banned.
 You can toggle flood protection on or off for specific channels by editing the FLOOD_PROTECTION_ENABLED dictionary in config.py.
 
+Start the bot
+-
+<code>python3 irc_bot.py</code>
+
 Troubleshooting
 -
 Ensure you have Python 3.x installed.
