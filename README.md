@@ -24,8 +24,8 @@ Enter folder
 Configuration
 -
 Step 2: Configure the Bot
-Edit the config.py file with your IRC server information:
-
+Edit the config.py file with your IRC server information<br>
+Edit filtered_*.py - the astrisk indicates that theres more than one 'filtered' py file. You can easily add which words, if any, you want filtered from the channel messages, and incoming nicknames.
 # config.py
 
 <code>IRC_SERVER = "irc.example.com"  # Replace with your IRC server<br>
@@ -66,6 +66,10 @@ They will receive a warning.
 On a second offense, they will be kicked from the channel.
 On a third offense, they will be banned.
 You can toggle flood protection on or off for specific channels by editing the FLOOD_PROTECTION_ENABLED dictionary in config.py.
+
+Start the bot
+-
+<code>python3 irc_bot.py</code>
 
 Troubleshooting
 -
