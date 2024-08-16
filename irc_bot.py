@@ -1,8 +1,15 @@
 import socket
+import re
 import config
 from flood_protection import FloodProtection
 from filtered_nicks import BAD_NICKNAMES
 from filtered_words import FILTERED_WORDS
+
+# Function to strip IRC control codes (color codes, bold, underline, etc.)
+def strip_control_codes(message):
+    # IRC Control codes regex (covers color, bold, underline, reverse, etc.)
+    control_code_regex = re.compile(r'(\x03\d{0,2}(,\d{1,2})?)|[\x02\x1F\x16\x0F]')
+    return control_code_regex.sub('', message)
 
 class IRCBot:
     def __init__(self):
@@ -45,25 +52,28 @@ class IRCBot:
                 user = response.split('!')[0][1:]
                 message = response.split('PRIVMSG')[1].split(':')[1].strip()
 
+                # Strip control codes from the message
+                sanitized_message = strip_control_codes(message)
+
                 if self.flood_protection_enabled:
                     if self.flood_protection.check_flood(user, self.channel):
                         self.handle_flood(user)
 
-                # Parse commands
-                if message.startswith(":op"):
+                # Parse commands based on sanitized message
+                if sanitized_message.startswith(":op"):
                     self.op_user(user)
-                elif message.startswith(":deop"):
+                elif sanitized_message.startswith(":deop"):
                     self.deop_user(user)
-                elif message.startswith(":voice"):
+                elif sanitized_message.startswith(":voice"):
                     self.voice_user(user)
-                elif message.startswith(":devoice"):
+                elif sanitized_message.startswith(":devoice"):
                     self.devoice_user(user)
-                elif message.startswith(":kick"):
-                    self.kick_user(user, message.split()[1], "[auto] You've been kicked for flooding.")
-                elif message.startswith(":ban"):
-                    self.ban_user(user, message.split()[1])
-                elif message.startswith(":shun"):
-                    self.shun_user(user, message.split()[1])
+                elif sanitized_message.startswith(":kick"):
+                    self.kick_user(user, sanitized_message.split()[1], "[auto] You've been kicked for flooding.")
+                elif sanitized_message.startswith(":ban"):
+                    self.ban_user(user, sanitized_message.split()[1])
+                elif sanitized_message.startswith(":shun"):
+                    self.shun_user(user, sanitized_message.split()[1])
 
             # Check for bad nicknames on user join
             if "JOIN" in response:
