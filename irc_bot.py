@@ -1,6 +1,8 @@
 import socket
 import config
 from flood_protection import FloodProtection
+from filtered_nicks import BAD_NICKNAMES
+from filtered_words import FILTERED_WORDS
 
 class IRCBot:
     def __init__(self):
@@ -29,8 +31,8 @@ class IRCBot:
     def send_command(self, command):
         self.irc.send(f"{command}\r\n".encode())
     
-    def send_message(self, message):
-        self.send_command(f"PRIVMSG {self.channel} :{message}")
+    def send_message(self, target, message):
+        self.send_command(f"PRIVMSG {target} :{message}")
     
     def listen(self):
         while True:
@@ -57,22 +59,28 @@ class IRCBot:
                 elif message.startswith(":devoice"):
                     self.devoice_user(user)
                 elif message.startswith(":kick"):
-                    self.kick_user(user, message.split()[1])
+                    self.kick_user(user, message.split()[1], "[auto] You've been kicked for flooding.")
                 elif message.startswith(":ban"):
                     self.ban_user(user, message.split()[1])
                 elif message.startswith(":shun"):
                     self.shun_user(user, message.split()[1])
 
+            # Check for bad nicknames on user join
+            if "JOIN" in response:
+                user_nick = response.split('!')[0][1:]
+                if user_nick in BAD_NICKNAMES:
+                    self.kick_user(self.nickname, user_nick, "[auto] Bad nickname detected.")
+                    self.send_message(user_nick, "Your nickname is not allowed. Please choose a different one.")
+
     def handle_flood(self, user):
         if user not in self.user_offenses:
             self.user_offenses[user] = 1
-            self.send_message(f"{user}: Warning! You are sending messages too quickly.")
+            self.send_message(self.channel, f"[auto] {user}: Warning! You are sending messages too quickly.")
         elif self.user_offenses[user] == 1:
-            self.kick_user(self.nickname, user)
+            self.kick_user(self.nickname, user, "[auto] You've been kicked for flooding.")
             self.user_offenses[user] += 1
         elif self.user_offenses[user] == 2:
             self.ban_user(self.nickname, user)
-            self.user_offenses[user] = 0  # Reset after ban
 
     def op_user(self, user):
         self.send_command(f"MODE {self.channel} +o {user}")
@@ -86,12 +94,12 @@ class IRCBot:
     def devoice_user(self, user):
         self.send_command(f"MODE {self.channel} -v {user}")
 
-    def kick_user(self, user, target):
-        self.send_command(f"KICK {self.channel} {target} :Requested by {user}")
+    def kick_user(self, user, target, reason):
+        self.send_command(f"KICK {self.channel} {target} :{reason}")
 
     def ban_user(self, user, target):
         self.send_command(f"MODE {self.channel} +b {target}")
-        self.kick_user(user, target)
+        self.kick_user(user, target, "[auto] You've been banned for repeated offenses.")
 
     def shun_user(self, user, target):
         self.send_command(f"MODE {self.channel} +q {target}")
