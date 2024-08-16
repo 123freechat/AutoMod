@@ -15,8 +15,11 @@ Installation
 -
 Step 1: Clone the Repository
 
-git clone https://github.com/123freechat/AutoMod.git
-cd AutoMod
+<code>git clone https://github.com/123freechat/AutoMod.git</code>
+
+Enter folder
+
+<code>cd AutoMod</code>
 
 Configuration
 -
@@ -25,13 +28,13 @@ Edit the config.py file with your IRC server information:
 
 # config.py
 
-IRC_SERVER = "irc.example.com"  # Replace with your IRC server
-IRC_PORT = 6667  # Replace with your IRC port if different
-IRC_CHANNEL = "#yourchannel"  # Replace with your IRC channel
-NICKNAME = "YourBot"  # Replace with your desired bot nickname
-REALNAME = "Your Realname"  # Replace with your real name
-IDENT = "yourbot"  # Replace with your bot ident
-PASSWORD = "yourpassword"  # Replace with your password if needed, otherwise leave as None
+<code>IRC_SERVER = "irc.example.com"  # Replace with your IRC server<br>
+IRC_PORT = 6667  # Replace with your IRC port if different<br>
+IRC_CHANNEL = "#yourchannel"  # Replace with your IRC channel<br>
+NICKNAME = "YourBot"  # Replace with your desired bot nickname<br>
+REALNAME = "Your Realname"  # Replace with your real name<br>
+IDENT = "yourbot"  # Replace with your bot ident<br>
+PASSWORD = "yourpassword"  # Replace with your password if needed, otherwise leave as None</code>
 
 # Flood protection configuration
 FLOOD_PROTECTION_ENABLED = {
@@ -48,13 +51,13 @@ Usage
 -
 Once the bot is running, you can use the following commands in the IRC channel:
 
-:op <user>: Give operator status to a user.
-:deop <user>: Remove operator status from a user.
-:voice <user>: Give voice status to a user.
-:devoice <user>: Remove voice status from a user.
-:kick <user>: Kick a user from the channel.
-:ban <user>: Ban a user from the channel.
-:shun <user>: Shun (silence) a user in the channel.
+<b>:op</b> <user>: Give operator status to a user.<br>
+<b>:deop</b> <user>: Remove operator status from a user.<br>
+<b>:voice</b> <user>: Give voice status to a user.<br>
+<b>:devoice</b> <user>: Remove voice status from a user.<br>
+<b>:kick</b> <user>: Kick a user from the channel.<br>
+<b>:ban</b> <user>: Ban a user from the channel.<br>
+<b>:shun</b> <user>: Shun (silence) a user in the channel.<br>
 
 Flood Protection
 Flood protection is enabled by default for each channel listed in config.py. If a user sends more than 7 messages within 5 seconds:
@@ -72,7 +75,7 @@ If the bot doesn't connect, ensure your network allows outbound connections to t
 Contributing
 Feel free to contribute to this project by submitting issues or pull requests on GitHub.
 
-<a href="https://www.123freechat.com">123FreeChat.com</a> is where you can see the bot in full action. For IRC irc.123freechat.com:+6697 or standard 6667 for non-SSL connections. 
+<a href="https://www.123freechat.com"><b>www.123FreeChat.com</b></a> is where you can see the bot in full action. For IRC irc.123freechat.com:+6697 or standard 6667 for non-SSL connections. 
 
 License
 -
