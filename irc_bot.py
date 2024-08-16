@@ -1,6 +1,8 @@
 import socket
 import re
 import sqlite3
+import pymysql  # For MySQL
+import psycopg2  # For PostgreSQL
 import config
 import db_config
 from flood_protection import FloodProtection
@@ -28,35 +30,80 @@ class IRCBot:
         # Tracking flood offenses and operator statuses
         self.user_offenses = {}
         self.operators = set()
+        self.verification_queue = {}  # Queue for storing actions during NickServ verification
 
-        # Connect to the SQLite database
-        self.conn = sqlite3.connect(db_config.DB_PATH)
+        # Connect to the appropriate database
+        if db_config.DB_TYPE == 'sqlite':
+            self.conn = sqlite3.connect(db_config.DB_PATH)
+        elif db_config.DB_TYPE == 'mysql':
+            self.conn = pymysql.connect(
+                host=db_config.DB_HOST,
+                user=db_config.DB_USER,
+                password=db_config.DB_PASSWORD,
+                database=db_config.DB_NAME
+            )
+        elif db_config.DB_TYPE == 'postgresql':
+            self.conn = psycopg2.connect(
+                host=db_config.DB_HOST,
+                user=db_config.DB_USER,
+                password=db_config.DB_PASSWORD,
+                dbname=db_config.DB_NAME
+            )
+        else:
+            raise ValueError("Unsupported DB_TYPE in db_config.py")
+
         self.cursor = self.conn.cursor()
         self.create_tables()
 
     def create_tables(self):
-        # Create tables if they don't exist
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                nickname TEXT UNIQUE,
-                join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                messages_sent INTEGER DEFAULT 0,
-                joins INTEGER DEFAULT 0,
-                parts INTEGER DEFAULT 0,
-                quits INTEGER DEFAULT 0,
-                reputation REAL DEFAULT 0
-            )
-        ''')
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS violations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                violation_type TEXT,
-                violation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            )
-        ''')
+        # Create tables if they don't exist (Adjust syntax if not using SQLite)
+        if db_config.DB_TYPE == 'sqlite':
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    nickname TEXT UNIQUE,
+                    join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    messages_sent INTEGER DEFAULT 0,
+                    joins INTEGER DEFAULT 0,
+                    parts INTEGER DEFAULT 0,
+                    quits INTEGER DEFAULT 0,
+                    reputation REAL DEFAULT 0,
+                    ip_address TEXT
+                )
+            ''')
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS violations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    violation_type TEXT,
+                    violation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )
+            ''')
+        else:
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    nickname VARCHAR(255) UNIQUE,
+                    join_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    messages_sent INTEGER DEFAULT 0,
+                    joins INTEGER DEFAULT 0,
+                    parts INTEGER DEFAULT 0,
+                    quits INTEGER DEFAULT 0,
+                    reputation REAL DEFAULT 0,
+                    ip_address VARCHAR(255)
+                )
+            ''')
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS violations (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER,
+                    violation_type VARCHAR(255),
+                    violation_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(user_id) REFERENCES users(id)
+                )
+            ''')
+
         self.conn.commit()
 
     def connect(self):
@@ -82,62 +129,95 @@ class IRCBot:
                 self.send_command(f"PONG {response.split()[1]}")
             if "PRIVMSG" in response:
                 user = response.split('!')[0][1:]
+                channel = response.split('PRIVMSG')[1].split(':')[0].strip()  # Get the channel
                 message = response.split('PRIVMSG')[1].split(':')[1].strip()
 
                 # Strip control codes from the message
                 sanitized_message = strip_control_codes(message)
 
-                # Track user stats
-                self.track_user_stats(user, sanitized_message, action="message")
+                # Check if the user is in the verification queue
+                if user in self.verification_queue:
+                    self.verification_queue[user].append((channel, sanitized_message))
+                else:
+                    self.track_user_stats(user, sanitized_message, action="message")
 
                 if self.flood_protection_enabled:
-                    if self.flood_protection.check_flood(user, self.default_channel):
-                        self.handle_flood(user)
+                    if self.flood_protection.check_flood(user, channel):
+                        self.handle_flood(user, channel)
 
                 # Check if the user is an operator in the channel
-                if f"@{self.default_channel}" in response:
+                if f"@{channel}" in response:
                     self.operators.add(user)
-                elif f"+{self.default_channel}" in response:
+                elif f"+{channel}" in response:
                     self.operators.discard(user)
 
                 # Commands for ops (moderators)
                 if user in self.operators:
                     if sanitized_message.startswith(":op"):
-                        self.op_user(sanitized_message.split()[1])
+                        self.op_user(channel, sanitized_message.split()[1])
                     elif sanitized_message.startswith(":deop"):
-                        self.deop_user(sanitized_message.split()[1])
+                        self.deop_user(channel, sanitized_message.split()[1])
                     elif sanitized_message.startswith(":voice"):
-                        self.voice_user(sanitized_message.split()[1])
+                        self.voice_user(channel, sanitized_message.split()[1])
                     elif sanitized_message.startswith(":devoice"):
-                        self.devoice_user(sanitized_message.split()[1])
+                        self.devoice_user(channel, sanitized_message.split()[1])
                     elif sanitized_message.startswith(":kick"):
-                        self.kick_user(user, sanitized_message.split()[1], "[auto] You've been kicked for flooding.")
+                        self.kick_user(channel, sanitized_message.split()[1], "[auto] You've been kicked for flooding.")
                         self.track_user_stats(sanitized_message.split()[1], action="kick")
                     elif sanitized_message.startswith(":ban"):
-                        self.ban_user(user, sanitized_message.split()[1])
+                        self.ban_user(channel, sanitized_message.split()[1])
                         self.track_user_stats(sanitized_message.split()[1], action="ban")
                     elif sanitized_message.startswith(":shun"):
-                        self.shun_user(user, sanitized_message.split()[1])
+                        self.shun_user(channel, sanitized_message.split()[1])
                     elif sanitized_message.startswith(":join"):
                         self.join_channel(sanitized_message.split()[1])
                         self.track_user_stats(sanitized_message.split()[1], action="join")
                     elif sanitized_message.startswith(":part"):
                         self.part_channel(sanitized_message.split()[1])
                         self.track_user_stats(sanitized_message.split()[1], action="part")
+                    elif sanitized_message.startswith(":userstat"):
+                        self.handle_userstat_command(channel, sanitized_message)
 
             # Check for bad nicknames on user join
             if "JOIN" in response:
                 user_nick = response.split('!')[0][1:]
-                if user_nick in BAD_NICKNAMES:
-                    self.kick_user(self.nickname, user_nick, "[auto] Bad nickname detected.")
-                    self.send_message(user_nick, "Your nickname is not allowed. Please choose a different one.")
-                else:
-                    self.track_user_stats(user_nick, action="join")
+                channel = response.split('JOIN :')[1].strip()  # Get the channel
+                self.send_command(f"WHOIS {user_nick}")
 
             # Handle user quitting the channel
             if "QUIT" in response:
                 user_nick = response.split('!')[0][1:]
                 self.track_user_stats(user_nick, action="quit")
+
+            # Handle WHOIS and NickServ identification check
+            if "NOTICE" in response and "NickServ" in response:
+                nickserv_response = response.split(":")[2].strip()
+                user_nick = response.split('!')[0][1:]
+                if "is not registered" in nickserv_response:
+                    self.send_message(user_nick, "Your nickname is not registered with NickServ. Please identify before participating.")
+                elif "has identified" in nickserv_response:
+                    # User is verified, process queued actions
+                    if user_nick in self.verification_queue:
+                        for channel, action in self.verification_queue[user_nick]:
+                            self.track_user_stats(user_nick, action=action)
+                        del self.verification_queue[user_nick]  # Clear the queue
+
+            if "WHOIS" in response:
+                whois_data = response.split()
+                user_nick = whois_data[3]
+                user_ip = whois_data[-1]
+
+                # Check if the IP is different from the one stored in the database
+                self.cursor.execute('SELECT ip_address FROM users WHERE nickname = ?', (user_nick,))
+                stored_ip = self.cursor.fetchone()
+
+                if stored_ip and stored_ip[0] != user_ip:
+                    # Ask NickServ for identification
+                    self.verification_queue[user_nick] = []
+                    self.send_command(f"PRIVMSG NickServ :STATUS {user_nick}")
+                else:
+                    # If IP matches or no IP is stored, track the user
+                    self.track_user_stats(user_nick)
 
     def track_user_stats(self, nickname, message=None, action="message"):
         # Check if the user exists in the database
@@ -190,52 +270,52 @@ class IRCBot:
             self.send_message(self.default_channel, f"[auto] {nickname} has been flagged as a disruptive chatter due to negative reputation.")
             # Additional actions for disruptive users can be implemented here
 
-    def handle_flood(self, user):
+    def handle_flood(self, user, channel):
         # Handle flood violations
         self.cursor.execute('SELECT id FROM users WHERE nickname = ?', (user,))
         user_id = self.cursor.fetchone()[0]
 
         if user not in self.user_offenses:
             self.user_offenses[user] = 1
-            self.send_message(self.default_channel, f"[auto] {user}: Warning! You are sending messages too quickly.")
+            self.send_message(channel, f"[auto] {user}: Warning! You are sending messages too quickly.")
             # Insert violation
             self.cursor.execute('INSERT INTO violations (user_id, violation_type) VALUES (?, ?)', (user_id, 'flood'))
             self.track_user_stats(user, action="kick")  # Deduct points for flood warnings
         elif self.user_offenses[user] == 1:
-            self.kick_user(self.nickname, user, "[auto] You've been kicked for flooding.")
+            self.kick_user(channel, user, "[auto] You've been kicked for flooding.")
             self.user_offenses[user] += 1
             # Insert violation
             self.cursor.execute('INSERT INTO violations (user_id, violation_type) VALUES (?, ?)', (user_id, 'flood'))
             self.track_user_stats(user, action="kick")
         elif self.user_offenses[user] == 2:
-            self.ban_user(self.nickname, user)
+            self.ban_user(channel, user)
             # Insert violation
             self.cursor.execute('INSERT INTO violations (user_id, violation_type) VALUES (?, ?)', (user_id, 'flood'))
             self.track_user_stats(user, action="ban")
 
         self.conn.commit()
 
-    def op_user(self, user):
-        self.send_command(f"MODE {self.default_channel} +o {user}")
+    def op_user(self, channel, user):
+        self.send_command(f"MODE {channel} +o {user}")
 
-    def deop_user(self, user):
-        self.send_command(f"MODE {self.default_channel} -o {user}")
+    def deop_user(self, channel, user):
+        self.send_command(f"MODE {channel} -o {user}")
 
-    def voice_user(self, user):
-        self.send_command(f"MODE {self.default_channel} +v {user}")
+    def voice_user(self, channel, user):
+        self.send_command(f"MODE {channel} +v {user}")
 
-    def devoice_user(self, user):
-        self.send_command(f"MODE {self.default_channel} -v {user}")
+    def devoice_user(self, channel, user):
+        self.send_command(f"MODE {channel} -v {user}")
 
-    def kick_user(self, user, target, reason):
-        self.send_command(f"KICK {self.default_channel} {target} :{reason}")
+    def kick_user(self, channel, target, reason):
+        self.send_command(f"KICK {channel} {target} :{reason}")
 
-    def ban_user(self, user, target):
-        self.send_command(f"MODE {self.default_channel} +b {target}")
-        self.kick_user(user, target, "[auto] You've been banned for repeated offenses.")
+    def ban_user(self, channel, target):
+        self.send_command(f"MODE {channel} +b {target}")
+        self.kick_user(channel, target, "[auto] You've been banned for repeated offenses.")
 
-    def shun_user(self, user, target):
-        self.send_command(f"MODE {self.default_channel} +q {target}")
+    def shun_user(self, channel, target):
+        self.send_command(f"MODE {channel} +q {target}")
 
     def join_channel(self, channel):
         self.send_command(f"JOIN {channel}")
