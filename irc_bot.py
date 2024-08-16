@@ -18,13 +18,13 @@ class IRCBot:
     def __init__(self):
         self.server = config.IRC_SERVER
         self.port = config.IRC_PORT
-        self.default_channel = config.DEFAULT_CHANNEL
         self.nickname = config.NICKNAME
         self.realname = config.REALNAME
         self.ident = config.IDENT
         self.password = config.PASSWORD
+        self.help_channel = config.HELP_CHANNEL  # Help channel defined in the config
         self.irc = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.flood_protection_enabled = config.FLOOD_PROTECTION_ENABLED.get(self.default_channel, True)
+        self.flood_protection_status = {}  # Track flood protection status per channel
         self.flood_protection = FloodProtection()
 
         # Tracking flood offenses and operator statuses
@@ -112,7 +112,7 @@ class IRCBot:
             self.send_command(f"PASS {self.password}")
         self.send_command(f"NICK {self.nickname}")
         self.send_command(f"USER {self.ident} 0 * :{self.realname}")
-        self.send_command(f"JOIN {self.default_channel}")
+        self.send_command(f"JOIN {self.help_channel}")  # Join the help channel
     
     def send_command(self, command):
         self.irc.send(f"{command}\r\n".encode())
@@ -141,7 +141,11 @@ class IRCBot:
                 else:
                     self.track_user_stats(user, sanitized_message, action="message")
 
-                if self.flood_protection_enabled:
+                # Handle flood protection commands
+                if sanitized_message.startswith(":floodpro"):
+                    self.handle_floodpro_command(channel, user, sanitized_message)
+
+                if self.flood_protection_status.get(channel, True):  # Default to enabled
                     if self.flood_protection.check_flood(user, channel):
                         self.handle_flood(user, channel)
 
@@ -219,6 +223,24 @@ class IRCBot:
                     # If IP matches or no IP is stored, track the user
                     self.track_user_stats(user_nick)
 
+    def handle_floodpro_command(self, channel, user, message):
+        # Handle :floodpro on/off command
+        if user in self.operators:
+            command = message.strip().split()
+            if len(command) == 2:
+                if command[1] == "on":
+                    self.flood_protection_status[channel] = True
+                    self.send_message(channel, f"[auto] Flood protection enabled in {channel}.")
+                elif command[1] == "off":
+                    self.flood_protection_status[channel] = False
+                    self.send_message(channel, f"[auto] Flood protection disabled in {channel}.")
+                else:
+                    self.send_message(channel, "[auto] Invalid flood protection command. Use :floodpro on/off.")
+            else:
+                self.send_message(channel, "[auto] Invalid flood protection command. Use :floodpro on/off.")
+        else:
+            self.send_message(channel, "[auto] Only operators can use the :floodpro command.")
+
     def track_user_stats(self, nickname, message=None, action="message"):
         # Check if the user exists in the database
         self.cursor.execute('SELECT id, messages_sent, reputation FROM users WHERE nickname = ?', (nickname,))
@@ -267,7 +289,7 @@ class IRCBot:
 
         if reputation < 0:
             # User is disruptive
-            self.send_message(self.default_channel, f"[auto] {nickname} has been flagged as a disruptive chatter due to negative reputation.")
+            self.send_message(self.help_channel, f"[auto] {nickname} has been flagged as a disruptive chatter due to negative reputation.")
             # Additional actions for disruptive users can be implemented here
 
     def handle_flood(self, user, channel):
